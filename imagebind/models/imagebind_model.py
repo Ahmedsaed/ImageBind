@@ -13,16 +13,27 @@ from types import SimpleNamespace
 import torch
 import torch.nn as nn
 
-from imagebind.models.helpers import (EinOpsRearrange, LearnableLogitScaling, Normalize,
-                            SelectElement, SelectEOSAndProject)
-from imagebind.models.multimodal_preprocessors import (AudioPreprocessor,
-                                             IMUPreprocessor, PadIm2Video,
-                                             PatchEmbedGeneric,
-                                             RGBDTPreprocessor,
-                                             SpatioTemporalPosEmbeddingHelper,
-                                             TextPreprocessor,
-                                             ThermalPreprocessor)
-from imagebind.models.transformer import MultiheadAttention, SimpleTransformer
+from imagebind.models.helpers import (
+    EinOpsRearrange,
+    LearnableLogitScaling,
+    Normalize,
+    SelectElement,
+    SelectEOSAndProject,
+)
+from imagebind.models.multimodal_preprocessors import (
+    AudioPreprocessor,
+    IMUPreprocessor,
+    PadIm2Video,
+    PatchEmbedGeneric,
+    RGBDTPreprocessor,
+    SpatioTemporalPosEmbeddingHelper,
+    TextPreprocessor,
+    ThermalPreprocessor,
+)
+from imagebind.models.transformer import (
+    QuantizableMultiheadAttention,
+    SimpleTransformer,
+)
 
 ModalityType = SimpleNamespace(
     VISION="vision",
@@ -296,16 +307,18 @@ class ImageBindModel(nn.Module):
                 ffn_dropout_rate=0.0,
                 drop_path_rate=drop_path,
                 attn_target=partial(
-                    MultiheadAttention,
+                    QuantizableMultiheadAttention,
                     embed_dim=embed_dim,
                     num_heads=num_heads,
                     bias=True,
                     add_bias_kv=add_bias_kv,
                 ),
                 pre_transformer_layer=nn.Sequential(
-                    nn.LayerNorm(embed_dim, eps=1e-6)
-                    if pre_transformer_ln
-                    else nn.Identity(),
+                    (
+                        nn.LayerNorm(embed_dim, eps=1e-6)
+                        if pre_transformer_ln
+                        else nn.Identity()
+                    ),
                     EinOpsRearrange("b l d -> l b d"),
                 ),
                 post_transformer_layer=EinOpsRearrange("l b d -> b l d"),
@@ -501,6 +514,8 @@ def imagebind_huge(pretrained=False):
                 progress=True,
             )
 
-        model.load_state_dict(torch.load(".checkpoints/imagebind_huge.pth", weights_only=True))
+        model.load_state_dict(
+            torch.load(".checkpoints/imagebind_huge.pth", weights_only=True)
+        )
 
     return model

@@ -125,6 +125,16 @@ class QuantizedMultiheadAttention(nn.quantized.MultiheadAttention):
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 
 
+class QuantizableMultiheadAttention(nn.quantizable.MultiheadAttention):
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+
+
+class QuantizedMultiheadAttention(nn.quantized.MultiheadAttention):
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+
+
 class ViTAttention(Attention):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         assert attn_mask is None
