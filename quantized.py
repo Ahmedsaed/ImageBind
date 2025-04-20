@@ -23,6 +23,8 @@ from imagebind.models.transformer import (
     QuantizableMultiheadAttention,
     QuantizedMultiheadAttention,
 )
+from torch.quantization.observer import HistogramObserver
+from torch.quantization import QConfig
 
 print("Loading ImageBind model...")
 model = imagebind_huge(pretrained=True)
@@ -49,7 +51,7 @@ def create_dummy_data():
             # Create dummy inputs for each modality
             dummy_data = {
                 ModalityType.VISION: torch.randn(3, 3, 224, 224),
-                ModalityType.TEXT: torch.randint(0, 49408, (77,)),
+                # ModalityType.TEXT: torch.randint(0, 49408, (77,)),
                 ModalityType.AUDIO: torch.randn(1, 128, 204),
                 # ModalityType.THERMAL: torch.randn(1, 1, 2, 224, 224),
                 # ModalityType.DEPTH: torch.randn(1, 1, 2, 224, 224),
@@ -68,14 +70,22 @@ data_loader = create_dummy_data()
 dummy_inputs = [next(iter(data_loader)) for _ in range(10)]
 
 print("COmputing original outputs...")
-# original_outputs = []
+original_outputs = []
 
-# with torch.no_grad():
-#     for sample in dummy_inputs:
-#         output = model(sample)
-#         original_outputs.append(output)
+with torch.no_grad():
+    for sample in dummy_inputs:
+        output = model(sample)
+        original_outputs.append(output)
+
+del model
 
 print("Quantizing model...")
+q_config = QConfig(
+    activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
+    weight=torch.quantization.default_per_channel_weight_observer,
+)
+
+model = imagebind_huge(pretrained=True, q_config=q_config)
 
 custom_module_config = {
     "float_to_observed_custom_module_class": {
@@ -88,7 +98,8 @@ custom_module_config = {
 
 # Prepare the model for static quantization
 torch.quantization.prepare(
-    model, inplace=True, prepare_custom_config_dict=custom_module_config
+    model,
+    inplace=True,  # prepare_custom_config_dict=custom_module_config
 )
 
 with torch.no_grad():
@@ -101,10 +112,11 @@ with torch.no_grad():
             break
 
 torch.quantization.convert(
-    model, inplace=True, convert_custom_config_dict=custom_module_config
+    model,
+    inplace=True,  # convert_custom_config_dict=custom_module_config
 )
 
-print(model)
+# print(model)
 
 print("Computing quantized outputs...")
 quan_outputs = []

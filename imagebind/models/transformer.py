@@ -91,9 +91,28 @@ class Mlp(nn.Module):
         return x
 
 
+# class MultiheadAttention(nn.MultiheadAttention):
+#     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+#         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+
+
 class MultiheadAttention(nn.MultiheadAttention):
+    def __init__(self, q_config=None, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from torch.quantization.observer import HistogramObserver
+        from torch.quantization import QConfig
+
+        q_config = QConfig(
+            activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
+            weight=torch.quantization.default_per_channel_weight_observer,
+        )
+        self.quant = torch.quantization.QuantStub(q_config)
+        self.dequant = torch.quantization.DeQuantStub(q_config)
+
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
-        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+        x = self.dequant(x)
+        out = super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+        return self.quant(out)
 
 
 class QuantizableMultiheadAttention(nn.quantizable.MultiheadAttention):
@@ -110,6 +129,25 @@ class ViTAttention(Attention):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         assert attn_mask is None
         return super().forward(x)
+
+
+class QuantizedDropPath(DropPath):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        from torch.quantization.observer import HistogramObserver
+        from torch.quantization import QConfig
+
+        q_config = QConfig(
+            activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
+            weight=torch.quantization.default_per_channel_weight_observer,
+        )
+        self.quant = torch.quantization.QuantStub(q_config)
+        self.dequant = torch.quantization.DeQuantStub(q_config)
+
+    def forward(self, x: torch.Tensor):
+        x = self.dequant(x)
+        out = super().forward(x)
+        return self.quant(out)
 
 
 class BlockWithMasking(nn.Module):
@@ -132,7 +170,7 @@ class BlockWithMasking(nn.Module):
         ), "attn_target should be a Callable. Otherwise attn_target is shared across blocks!"
         self.attn = attn_target()
         if drop_path > 0.0:
-            self.drop_path = DropPath(drop_path)
+            self.drop_path = QuantizedDropPath(drop_path)
         else:
             self.drop_path = nn.Identity()
         self.norm_1 = norm_layer(dim)
@@ -166,17 +204,31 @@ class BlockWithMasking(nn.Module):
                 requires_grad=True,
             )
 
+        self.skip_add = nn.quantized.FloatFunctional()
+
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         if self.layer_scale_type is None:
-            x = x + self.drop_path(self.attn(self.norm_1(x), attn_mask))
-            x = x + self.drop_path(self.mlp(self.norm_2(x)))
-        else:
-            x = (
-                x
-                + self.drop_path(self.attn(self.norm_1(x), attn_mask))
-                * self.layer_scale_gamma1
+            # x = x + self.drop_path(self.attn(self.norm_1(x), attn_mask))
+            x = self.skip_add.add(
+                x, self.drop_path(self.attn(self.norm_1(x), attn_mask))
             )
-            x = x + self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            # x = x + self.drop_path(self.mlp(self.norm_2(x)))
+            x = self.skip_add.add(x, self.drop_path(self.mlp(self.norm_2(x))))
+        else:
+            # x = (
+            #     x
+            #     + self.drop_path(self.attn(self.norm_1(x), attn_mask))
+            #     * self.layer_scale_gamma1
+            # )
+            # x = x + self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            x = self.skip_add.add(
+                x,
+                self.drop_path(self.attn(self.norm_1(x), attn_mask))
+                * self.layer_scale_gamma1,
+            )
+            x = self.skip_add.add(
+                x, self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            )
         return x
 
 

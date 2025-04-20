@@ -81,6 +81,7 @@ class QuantizedImageBindModel(nn.Module):
         imu_num_blocks=6,
         imu_num_heads=8,
         imu_drop_path=0.7,
+        q_config=None,
     ):
         super().__init__()
 
@@ -140,21 +141,21 @@ class QuantizedImageBindModel(nn.Module):
             out_embed_dim
         )
 
-        self.modality_trunks.qconfig = torch.quantization.get_default_qconfig("x86")
-        self.modality_heads.qconfig = torch.quantization.get_default_qconfig("x86")
-        self.modality_postprocessors.qconfig = torch.quantization.get_default_qconfig(
-            "x86"
-        )
+        self.modality_trunks.qconfig = q_config
+        self.modality_heads.qconfig = q_config
+        self.modality_postprocessors.qconfig = q_config
 
         for _, mod in self.named_modules():
-            if isinstance(mod, (nn.LayerNorm)):
+            if isinstance(mod, (MultiheadAttention)):
                 mod.qconfig = None
 
         self.quant_stubs = nn.ModuleDict()
         self.dequant_stubs = nn.ModuleDict()
         for modality in vars(ModalityType).values():
-            self.quant_stubs[modality] = QuantStub()
-            self.dequant_stubs[modality] = DeQuantStub()
+            self.quant_stubs[modality] = nn.ModuleDict(
+                {"head": QuantStub(q_config), "trunk": QuantStub(q_config)}
+            )
+            self.dequant_stubs[modality] = DeQuantStub(q_config)
 
     def _create_modality_preprocessors(
         self,
@@ -488,10 +489,22 @@ class QuantizedImageBindModel(nn.Module):
                     **{modality_key: modality_value}
                 )
 
-                modality_value = self.quant_stubs[modality_key](modality_value)
+                def quantize_if_tensor(key, tensor):
+                    if isinstance(tensor, torch.Tensor):
+                        return self.quant_stubs[modality_key][key](tensor)
+                    return tensor
+
+                modality_value = {
+                    section_key: {
+                        key: quantize_if_tensor(section_key, tensor)
+                        for key, tensor in section.items()
+                    }
+                    for section_key, section in modality_value.items()
+                }
 
                 trunk_inputs = modality_value["trunk"]
                 head_inputs = modality_value["head"]
+
                 modality_value = self.modality_trunks[modality_key](**trunk_inputs)
                 modality_value = self.modality_heads[modality_key](
                     modality_value, **head_inputs
@@ -511,7 +524,7 @@ class QuantizedImageBindModel(nn.Module):
         return outputs
 
 
-def imagebind_huge(pretrained=False):
+def imagebind_huge(pretrained=False, q_config=None):
     model = QuantizedImageBindModel(
         vision_embed_dim=1280,
         vision_num_blocks=32,
@@ -522,6 +535,7 @@ def imagebind_huge(pretrained=False):
         out_embed_dim=1024,
         audio_drop_path=0.1,
         imu_drop_path=0.7,
+        q_config=q_config,
     )
 
     if pretrained:
