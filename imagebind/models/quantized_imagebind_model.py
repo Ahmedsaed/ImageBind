@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from torch.quantization import QuantStub, DeQuantStub
 
 from imagebind.models.helpers import (
     EinOpsRearrange,
@@ -31,7 +32,7 @@ from imagebind.models.multimodal_preprocessors import (
     ThermalPreprocessor,
 )
 from imagebind.models.transformer import (
-    QuantizableMultiheadAttention,
+    MultiheadAttention,
     SimpleTransformer,
 )
 
@@ -45,7 +46,7 @@ ModalityType = SimpleNamespace(
 )
 
 
-class ImageBindModel(nn.Module):
+class QuantizedImageBindModel(nn.Module):
     def __init__(
         self,
         video_frames=2,
@@ -138,6 +139,22 @@ class ImageBindModel(nn.Module):
         self.modality_postprocessors = self._create_modality_postprocessors(
             out_embed_dim
         )
+
+        self.modality_trunks.qconfig = torch.quantization.get_default_qconfig("x86")
+        self.modality_heads.qconfig = torch.quantization.get_default_qconfig("x86")
+        self.modality_postprocessors.qconfig = torch.quantization.get_default_qconfig(
+            "x86"
+        )
+
+        for _, mod in self.named_modules():
+            if isinstance(mod, (nn.LayerNorm)):
+                mod.qconfig = None
+
+        self.quant_stubs = nn.ModuleDict()
+        self.dequant_stubs = nn.ModuleDict()
+        for modality in vars(ModalityType).values():
+            self.quant_stubs[modality] = QuantStub()
+            self.dequant_stubs[modality] = DeQuantStub()
 
     def _create_modality_preprocessors(
         self,
@@ -307,7 +324,7 @@ class ImageBindModel(nn.Module):
                 ffn_dropout_rate=0.0,
                 drop_path_rate=drop_path,
                 attn_target=partial(
-                    QuantizableMultiheadAttention,
+                    MultiheadAttention,
                     embed_dim=embed_dim,
                     num_heads=num_heads,
                     bias=True,
@@ -470,6 +487,9 @@ class ImageBindModel(nn.Module):
                 modality_value = self.modality_preprocessors[modality_key](
                     **{modality_key: modality_value}
                 )
+
+                modality_value = self.quant_stubs[modality_key](modality_value)
+
                 trunk_inputs = modality_value["trunk"]
                 head_inputs = modality_value["head"]
                 modality_value = self.modality_trunks[modality_key](**trunk_inputs)
@@ -479,6 +499,8 @@ class ImageBindModel(nn.Module):
                 modality_value = self.modality_postprocessors[modality_key](
                     modality_value
                 )
+
+                modality_value = self.dequant_stubs[modality_key](modality_value)
 
                 if reduce_list:
                     modality_value = modality_value.reshape(B, S, -1)
@@ -490,7 +512,7 @@ class ImageBindModel(nn.Module):
 
 
 def imagebind_huge(pretrained=False):
-    model = ImageBindModel(
+    model = QuantizedImageBindModel(
         vision_embed_dim=1280,
         vision_num_blocks=32,
         vision_num_heads=16,
