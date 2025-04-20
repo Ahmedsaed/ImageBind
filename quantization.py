@@ -53,16 +53,34 @@ def prepare_for_static_quantization(model):
         if isinstance(mod, (nn.Conv3d, nn.LayerNorm)):
             mod.qconfig = None
 
-    model.quant = QuantStub()
+    # Create quantization stubs for each modality
+    model.quant_stubs = nn.ModuleDict()
+    for modality in vars(ModalityType).values():
+        model.quant_stubs[modality] = QuantStub()
     model.dequant = DeQuantStub()
 
     original_forward = model.forward
 
-    def wrapped_forward(x):
-        x = model.quant(x)
-        x = original_forward(x)
-        x = model.dequant(x)
-        return x
+    def wrapped_forward(inputs_dict):
+        # Quantize each modality input
+        quantized_inputs = {}
+        for modality, tensor in inputs_dict.items():
+            if modality in model.quant_stubs:
+                quantized_inputs[modality] = model.quant_stubs[modality](tensor)
+            else:
+                quantized_inputs[modality] = tensor
+
+        # Process with original forward
+        outputs = original_forward(quantized_inputs)
+
+        # Dequantize outputs
+        if isinstance(outputs, dict):
+            dequantized_outputs = {}
+            for key, tensor in outputs.items():
+                dequantized_outputs[key] = model.dequant(tensor)
+            return dequantized_outputs
+        else:
+            return model.dequant(outputs)
 
     model.forward = wrapped_forward
 
@@ -98,9 +116,6 @@ def convert_to_static_quantized(prepared_model):
     return quantized_model
 
 
-# ----------------------------------------
-# Example Usage
-# ----------------------------------------
 def apply_static_quantization(model, calibration_data):
     """
     Quantizes the ImageBind model using either dynamic or static quantization.
@@ -114,15 +129,81 @@ def apply_static_quantization(model, calibration_data):
     print("Applying static quantization...")
 
     # Prepare for static quantization
-    prepared_model = prepare_for_static_quantization(model)
+    model = prepare_for_static_quantization(model)
 
     # Calibrate
-    calibrate_model(prepared_model, calibration_data)
+    calibrate_model(model, calibration_data)
 
     # Convert to quantized model
+    model = convert_to_static_quantized(model)
+
+    return model
+
+
+# ----------------------------------------
+# Model Loaders
+# ----------------------------------------
+def load_dynamic_quantized_model(model_path, device="cpu"):
+    """
+    Load a dynamically quantized ImageBind model from a saved state dict.
+
+    Args:
+        model_path (str): Path to the saved dynamically quantized model weights
+        device (str): Device to load the model on ('cpu', 'cuda')
+
+    Returns:
+        torch.nn.Module: The loaded dynamically quantized model
+    """
+    print(f"Loading dynamically quantized model from {model_path}")
+
+    # First, create the base model with the same architecture
+    model = imagebind_huge(pretrained=False)
+    model.eval()  # Important to set to evaluation mode
+
+    # Apply dynamic quantization to the model (same as during saving)
+    quantized_model = apply_dynamic_quantization(model)
+
+    # Load the state dictionary from file
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    quantized_model.load_state_dict(state_dict)
+
+    return quantized_model.to(device)
+
+
+def load_static_quantized_model(model_path, device="cpu"):
+    """
+    Load a statically quantized ImageBind model from a saved state dict.
+
+    Args:
+        model_path (str): Path to the saved statically quantized model weights
+        device (str): Device to load the model on (should be 'cpu' for static quantization)
+
+    Returns:
+        torch.nn.Module: The loaded statically quantized model
+    """
+    if device != "cpu":
+        print(
+            "Warning: Static quantization was done for CPU inference. Forcing device to 'cpu'."
+        )
+        device = "cpu"
+
+    print(f"Loading statically quantized model from {model_path}")
+
+    # Create the base model with the same architecture
+    model = imagebind_huge(pretrained=False)
+    model.eval()  # Important to set to evaluation mode
+
+    # Prepare the model for static quantization (same as during saving)
+    prepared_model = prepare_for_static_quantization(model)
+
+    # Convert the model to a statically quantized model
     quantized_model = convert_to_static_quantized(prepared_model)
 
-    return quantized_model
+    # Load the state dictionary from file
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    quantized_model.load_state_dict(state_dict)
+
+    return quantized_model.to(device)
 
 
 # ----------------------------------------
@@ -242,23 +323,23 @@ def compare_models(original_model, quantized_model, data_loader, num_samples=10)
     dummy_inputs = [next(iter(data_loader)) for _ in range(num_samples)]
 
     # 1. Compare size
-    original_size = get_model_size(original_model)
-    quantized_size = get_model_size(quantized_model)
+    # original_size = get_model_size(original_model)
+    # quantized_size = get_model_size(quantized_model)
 
-    print(f"Original model size: {original_size:.2f} MB")
-    print(f"Quantized model size: {quantized_size:.2f} MB")
-    print(f"Size reduction: {(1 - quantized_size/original_size)*100:.2f}%")
+    # print(f"Original model size: {original_size:.2f} MB")
+    # print(f"Quantized model size: {quantized_size:.2f} MB")
+    # print(f"Size reduction: {(1 - quantized_size/original_size)*100:.2f}%")
 
     # 2. Compare performance
     original_model.eval()
     quantized_model.eval()
 
-    quantized_time = benchmark_model_speed(quantized_model, dummy_inputs[0])
-    original_time = benchmark_model_speed(original_model, dummy_inputs[0])
+    # quantized_time = benchmark_model_speed(quantized_model, dummy_inputs[0])
+    # original_time = benchmark_model_speed(original_model, dummy_inputs[0])
 
-    print(f"Original model inference time: {original_time:.2f} ms")
-    print(f"Quantized model inference time: {quantized_time:.2f} ms")
-    print(f"Speed improvement: {(1 - quantized_time/original_time)*100:.2f}%")
+    # print(f"Original model inference time: {original_time:.2f} ms")
+    # print(f"Quantized model inference time: {quantized_time:.2f} ms")
+    # print(f"Speed improvement: {(1 - quantized_time/original_time)*100:.2f}%")
 
     # 3. Compare output (accuracy) across multiple samples
     modality_scores = {}
@@ -287,7 +368,7 @@ def compare_models(original_model, quantized_model, data_loader, num_samples=10)
 # ----------------------------------------
 # Experiments
 # ----------------------------------------
-def dynamic_quantization_int8(original_model, data_loader):
+def dynamic_quantization_int8_example(original_model, data_loader):
     print("=== Dynamic Quantization Int8 ===")
     dynamic_quantized_model = apply_dynamic_quantization(
         original_model, dtype=torch.qint8
@@ -303,12 +384,9 @@ def dynamic_quantization_int8(original_model, data_loader):
     )
 
 
-def static_quantization(original_model, data_loader):
+def static_quantization_example(original_model, data_loader):
     print("=== Static Quantization ===")
     static_quantized_model = apply_static_quantization(original_model, data_loader)
-
-    print("=== Comparison: Original vs Static Quantization ===")
-    compare_models(original_model, static_quantized_model, data_loader)
 
     # Save the quantized models
     torch.save(
@@ -316,14 +394,59 @@ def static_quantization(original_model, data_loader):
         ".checkpoints/imagebind_static_quantized.pth",
     )
 
+    # load model
+    model = imagebind_huge(pretrained=False)
+
+    model = prepare_for_static_quantization(model)
+
+    model = convert_to_static_quantized(model)
+
+    # Load the state dictionary from file
+    state_dict = torch.load(
+        ".checkpoints/imagebind_static_quantized.pth",
+        map_location="cpu",
+        weights_only=False,
+    )
+    model.load_state_dict(state_dict)
+
+    print("=== Comparison: Original vs Static Quantization ===")
+    compare_models(original_model, model, data_loader)
+
+
+def load_dynamic_quantized_model_example(original_model, quantized_model_path):
+    quantized_model = load_dynamic_quantized_model(quantized_model_path)
+
+    print("=== Comparison: Original vs Loaded Dynamic Quantized Model ===")
+    compare_models(original_model, quantized_model, data_loader)
+
+
+def load_static_quantized_model_example(original_model, quantized_model_path):
+    quantized_model = load_static_quantized_model(quantized_model_path)
+
+    print("=== Comparison: Original vs Loaded Static Quantized Model ===")
+    compare_models(original_model, quantized_model, data_loader)
+
 
 if __name__ == "__main__":
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning)
+
     # Load the original model for comparison
     original_model = imagebind_huge(pretrained=True)
     original_model.eval()
 
     data_loader = create_dummy_data()
 
-    dynamic_quantization_int8(original_model, data_loader)
+    # dynamic_quantization_int8_example(original_model, data_loader)
 
-    static_quantization(original_model, data_loader)
+    static_quantization_example(original_model, data_loader)
+
+    # Load the quantized models for comparison
+    # load_dynamic_quantized_model_example(
+    #     original_model, ".checkpoints/imagebind_dynamic_quantized_int8.pth"
+    # )
+
+    # load_static_quantized_model_example(
+    #     original_model, ".checkpoints/imagebind_static_quantized.pth"
+    # )
