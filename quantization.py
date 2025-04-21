@@ -273,7 +273,7 @@ def create_dummy_data(batch_size=10):
 # ----------------------------------------
 # Benchmarking Functions
 # ----------------------------------------
-def benchmark_model_speed(model, data_loader, num_runs=50, num_samples=10):
+def benchmark_model_speed(model, data_loader, num_runs=50):
     """
     Benchmark model inference speed.
 
@@ -297,10 +297,7 @@ def benchmark_model_speed(model, data_loader, num_runs=50, num_samples=10):
         start_time = time.time()
         for _ in range(num_runs):
             with torch.no_grad():
-                for btch_idx, sample in enumerate(data_loader):
-                    if btch_idx >= num_samples:
-                        break
-                    model(sample)
+                model(next(iter(data_loader)))
 
         end_time = time.time()
 
@@ -346,7 +343,7 @@ def compare_outputs(original_outputs, quantized_outputs):
 # ----------------------------------------
 # Experiments
 # ----------------------------------------
-def test_model(model, data_loader, num_samples=5):
+def test_model(model, data_loader, num_samples=10):
     """
     Test the model with dummy data
     """
@@ -373,32 +370,28 @@ if __name__ == "__main__":
 
     data_loader = create_dummy_data()
 
-    dummy_inputs = [next(iter(data_loader)) for _ in range(1)]
+    dummy_inputs = [next(iter(data_loader)) for _ in range(10)]
 
     print("=== Computing Original Model Outputs ===")
-    original_outputs = test_model(original_model, data_loader)
+    original_outputs = test_model(original_model, dummy_inputs)
     original_model_size = get_model_size(original_model)
 
     print("=== Benchmarking Original Model Speed ===")
-    original_time = benchmark_model_speed(
-        original_model, data_loader, num_runs=5, num_samples=1
-    )
+    original_time = benchmark_model_speed(original_model, data_loader, num_runs=5)
     print(f"Original model inference time: {original_time:.2f} ms")
 
     print("=== Dynamic Quantization Int8 ===")
     quantized_model = apply_dynamic_quantization(original_model, dtype=torch.qint8)
 
-    print("=== Static Quantization ===")
-    quantized_model = apply_static_quantization(original_model, data_loader)
+    # print("=== Static Quantization ===")
+    # quantized_model = apply_static_quantization(original_model, data_loader)
 
     print("=== Compute Quantized Model Outputs ===")
-    quantized_outputs = test_model(quantized_model, data_loader)
+    quantized_outputs = test_model(quantized_model, dummy_inputs)
     quantized_model_size = get_model_size(quantized_model)
 
     print("=== Benchmarking Quantized Model Speed ===")
-    quantized_time = benchmark_model_speed(
-        quantized_model, data_loader, num_runs=5, num_samples=1
-    )
+    quantized_time = benchmark_model_speed(quantized_model, data_loader, num_runs=5)
     print(f"Quantized model inference time: {quantized_time:.2f} ms")
 
     print("=== Comparing Outputs ===")
@@ -407,11 +400,11 @@ if __name__ == "__main__":
     print(
         f"Size reduction: {100 * (1 - (quantized_model_size / original_model_size)):.2f}%"
     )
-    print(f"Speed improvement: {100 * (1 - (quantized_time / original_time)):.2f}x")
+    print(f"Speed improvement: {100 * (1 - (quantized_time / original_time)):.2f}%")
     compare_outputs(original_outputs, quantized_outputs)
 
-    print("=== Saving Quantized Model === ")
-    torch.save(
-        quantized_model.state_dict(),
-        ".checkpoints/imagebind_quantized.pth",
-    )
+    # print("=== Saving Quantized Model === ")
+    # torch.save(
+    #     quantized_model.state_dict(),
+    #     ".checkpoints/imagebind_quantized.pth",
+    # )
