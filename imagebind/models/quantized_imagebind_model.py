@@ -145,10 +145,6 @@ class QuantizedImageBindModel(nn.Module):
         self.modality_heads.qconfig = q_config
         self.modality_postprocessors.qconfig = q_config
 
-        for _, mod in self.named_modules():
-            if isinstance(mod, (MultiheadAttention)):
-                mod.qconfig = None
-
         self.quant_stubs = nn.ModuleDict()
         self.dequant_stubs = nn.ModuleDict()
         for modality in vars(ModalityType).values():

@@ -91,41 +91,14 @@ class Mlp(nn.Module):
         return x
 
 
-# class MultiheadAttention(nn.MultiheadAttention):
-#     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
-#         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
-
-
 class MultiheadAttention(nn.MultiheadAttention):
-    def __init__(self, q_config=None, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        from torch.quantization.observer import HistogramObserver
-        from torch.quantization import QConfig
-
-        q_config = QConfig(
-            activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
-            weight=torch.quantization.default_per_channel_weight_observer,
-        )
-        self.quant = torch.quantization.QuantStub(q_config)
-        self.dequant = torch.quantization.DeQuantStub(q_config)
-
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
-        x = self.dequant(x)
-        out = super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
-        return self.quant(out)
-
-
-class QuantizableMultiheadAttention(nn.quantizable.MultiheadAttention):
-    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
-        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
-
-
-class QuantizedMultiheadAttention(nn.quantized.MultiheadAttention):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 
 
 class QuantizableMultiheadAttention(nn.quantizable.MultiheadAttention):
+    _FLOAT_MODULE = MultiheadAttention
+
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 

@@ -98,8 +98,7 @@ custom_module_config = {
 
 # Prepare the model for static quantization
 torch.quantization.prepare(
-    model,
-    inplace=True,  # prepare_custom_config_dict=custom_module_config
+    model, inplace=True, prepare_custom_config_dict=custom_module_config
 )
 
 with torch.no_grad():
@@ -112,8 +111,7 @@ with torch.no_grad():
             break
 
 torch.quantization.convert(
-    model,
-    inplace=True,  # convert_custom_config_dict=custom_module_config
+    model, inplace=True, convert_custom_config_dict=custom_module_config
 )
 
 # print(model)
