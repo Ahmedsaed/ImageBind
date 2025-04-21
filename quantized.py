@@ -7,11 +7,8 @@ Original file is located at
     https://colab.research.google.com/drive/1s03ue8ewtMAsrII18tXrC6EOy7lN3FBD
 """
 import torch
-import torch.nn as nn
-import torch.nn.quantizable
 import torch.nn.quantized
 import torch.quantization
-from collections import defaultdict
 
 # Import your ImageBind model
 from imagebind.models.quantized_imagebind_model import (
@@ -52,7 +49,7 @@ def create_dummy_data():
             # Create dummy inputs for each modality
             dummy_data = {
                 ModalityType.VISION: torch.randn(3, 3, 224, 224),
-                # ModalityType.TEXT: torch.randint(0, 49408, (77,)),
+                ModalityType.TEXT: torch.randint(0, 49408, (77,)),
                 ModalityType.AUDIO: torch.randn(1, 128, 204),
                 # ModalityType.THERMAL: torch.randn(1, 1, 2, 224, 224),
                 # ModalityType.DEPTH: torch.randn(1, 1, 2, 224, 224),
@@ -65,6 +62,7 @@ def create_dummy_data():
     return dataloader
 
 
+x = torch.nn.quantized.MultiheadAttention
 print("Creating dummy data...")
 data_loader = create_dummy_data()
 
@@ -103,13 +101,9 @@ torch.quantization.prepare(
 )
 
 with torch.no_grad():
-    for batch_idx, sample in enumerate(data_loader):
+    for sample in dummy_inputs:
         # Forward pass for calibration
         model(sample)
-
-        # Limit calibration to a few batches for speed
-        if batch_idx >= 10:
-            break
 
 torch.quantization.convert(
     model, inplace=True, convert_custom_config_dict=custom_module_config

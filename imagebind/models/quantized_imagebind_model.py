@@ -148,9 +148,7 @@ class QuantizedImageBindModel(nn.Module):
         self.quant_stubs = nn.ModuleDict()
         self.dequant_stubs = nn.ModuleDict()
         for modality in vars(ModalityType).values():
-            self.quant_stubs[modality] = nn.ModuleDict(
-                {"head": QuantStub(q_config), "trunk": QuantStub(q_config)}
-            )
+            self.quant_stubs[modality] = nn.ModuleDict({"tokens": QuantStub(q_config)})
             self.dequant_stubs[modality] = DeQuantStub(q_config)
 
     def _create_modality_preprocessors(
@@ -485,15 +483,19 @@ class QuantizedImageBindModel(nn.Module):
                     **{modality_key: modality_value}
                 )
 
-                def quantize_if_tensor(key, tensor):
+                def quantize_if_tensor(section_key, tensor_key, tensor):
+                    if section_key == "head":
+                        return tensor
+                    if section_key == "trunk" and tensor_key == "attn_mask":
+                        return tensor
                     if isinstance(tensor, torch.Tensor):
-                        return self.quant_stubs[modality_key][key](tensor)
+                        return self.quant_stubs[modality_key][tensor_key](tensor)
                     return tensor
 
                 modality_value = {
                     section_key: {
-                        key: quantize_if_tensor(section_key, tensor)
-                        for key, tensor in section.items()
+                        tensor_key: quantize_if_tensor(section_key, tensor_key, tensor)
+                        for tensor_key, tensor in section.items()
                     }
                     for section_key, section in modality_value.items()
                 }
