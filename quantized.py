@@ -26,6 +26,7 @@ from imagebind.models.transformer import (
 from torch.quantization.observer import HistogramObserver
 from torch.quantization import QConfig
 
+
 print("Loading ImageBind model...")
 model = imagebind_huge(pretrained=True)
 model.eval()

@@ -117,15 +117,9 @@ class ViTAttention(Attention):
 class QuantizedDropPath(DropPath):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        from torch.quantization.observer import HistogramObserver
-        from torch.quantization import QConfig
 
-        q_config = QConfig(
-            activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
-            weight=torch.quantization.default_per_channel_weight_observer,
-        )
-        self.quant = torch.quantization.QuantStub(q_config)
-        self.dequant = torch.quantization.DeQuantStub(q_config)
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
 
     def forward(self, x: torch.Tensor):
         x = self.dequant(x)
