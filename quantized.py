@@ -48,17 +48,17 @@ def create_dummy_data():
         def __getitem__(self, idx):
             # Create dummy inputs for each modality
             dummy_data = {
-                ModalityType.VISION: torch.randn(3, 3, 224, 224),
+                ModalityType.VISION: torch.randn(3, 224, 224),
                 ModalityType.TEXT: torch.randint(0, 49408, (77,)),
-                ModalityType.AUDIO: torch.randn(1, 128, 204),
-                # ModalityType.THERMAL: torch.randn(1, 1, 2, 224, 224),
-                # ModalityType.DEPTH: torch.randn(1, 1, 2, 224, 224),
-                # ModalityType.IMU: torch.randn(1, 1, 2, 224, 224),
+                ModalityType.AUDIO: torch.randn(3, 1, 128, 204),
+                ModalityType.DEPTH: torch.randn(1, 224, 224),
+                ModalityType.THERMAL: torch.randn(1, 224, 224),
+                ModalityType.IMU: torch.randn(6, 2000),
             }
             return dummy_data
 
     dataset = DummyDataset()
-    dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=10, shuffle=False)
     return dataloader
 
 
@@ -66,7 +66,7 @@ x = torch.nn.quantized.MultiheadAttention
 print("Creating dummy data...")
 data_loader = create_dummy_data()
 
-dummy_inputs = [next(iter(data_loader)) for _ in range(10)]
+dummy_inputs = [next(iter(data_loader)) for _ in range(1)]
 
 print("COmputing original outputs...")
 original_outputs = []
