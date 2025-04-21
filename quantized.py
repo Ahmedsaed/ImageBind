@@ -7,7 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1s03ue8ewtMAsrII18tXrC6EOy7lN3FBD
 """
 import torch
-import torch.nn.quantized
 import torch.quantization
 
 # Import your ImageBind model
@@ -20,7 +19,10 @@ from imagebind.models.transformer import (
     QuantizableMultiheadAttention,
     QuantizedMultiheadAttention,
 )
-from torch.quantization.observer import HistogramObserver
+from torch.quantization.observer import (
+    HistogramObserver,
+    MovingAverageMinMaxObserver,
+)
 from torch.quantization import QConfig
 
 
@@ -62,13 +64,12 @@ def create_dummy_data():
     return dataloader
 
 
-x = torch.nn.quantized.MultiheadAttention
 print("Creating dummy data...")
 data_loader = create_dummy_data()
 
-dummy_inputs = [next(iter(data_loader)) for _ in range(1)]
+dummy_inputs = [next(iter(data_loader)) for _ in range(10)]
 
-print("COmputing original outputs...")
+print("Computing original outputs...")
 original_outputs = []
 
 with torch.no_grad():
@@ -80,7 +81,7 @@ del model
 
 print("Quantizing model...")
 q_config = QConfig(
-    activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
+    activation=MovingAverageMinMaxObserver.with_args(quant_max=255, quant_min=0),
     weight=torch.quantization.default_per_channel_weight_observer,
 )
 
@@ -139,4 +140,9 @@ for modality, scores in modality_scores.items():
     avg_similarity = sum(scores) / len(scores)
     print(f"Average output similarity for {modality}: {avg_similarity:.6f}")
 
-del model
+# Save the quantized model
+quantized_model_path = ".checkpoints/static_quantized_imagebind_model.pth"
+
+torch.save(model.state_dict(), quantized_model_path)
+
+print(f"Quantized model saved to {quantized_model_path}")
