@@ -31,7 +31,7 @@ from imagebind.models.multimodal_preprocessors import (
     ThermalPreprocessor,
 )
 from imagebind.models.transformer import (
-    QuantizableMultiheadAttention,
+    MultiheadAttention,
     SimpleTransformer,
 )
 
@@ -307,7 +307,7 @@ class ImageBindModel(nn.Module):
                 ffn_dropout_rate=0.0,
                 drop_path_rate=drop_path,
                 attn_target=partial(
-                    QuantizableMultiheadAttention,
+                    MultiheadAttention,
                     embed_dim=embed_dim,
                     num_heads=num_heads,
                     bias=True,
