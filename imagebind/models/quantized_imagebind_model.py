@@ -81,7 +81,7 @@ class QuantizedImageBindModel(nn.Module):
         imu_num_blocks=6,
         imu_num_heads=8,
         imu_drop_path=0.7,
-        q_config=None,
+        qconfig=None,
     ):
         super().__init__()
 
@@ -141,15 +141,21 @@ class QuantizedImageBindModel(nn.Module):
             out_embed_dim
         )
 
-        self.modality_trunks.qconfig = q_config
-        self.modality_heads.qconfig = q_config
-        self.modality_postprocessors.qconfig = q_config
+        self.apply_qconfig(qconfig)
+
+    def apply_qconfig(self, qconfig):
+        """
+        Apply quantization to the model.
+        """
+        self.modality_trunks.qconfig = qconfig
+        self.modality_heads.qconfig = qconfig
+        self.modality_postprocessors.qconfig = qconfig
 
         self.quant_stubs = nn.ModuleDict()
         self.dequant_stubs = nn.ModuleDict()
         for modality in vars(ModalityType).values():
-            self.quant_stubs[modality] = nn.ModuleDict({"tokens": QuantStub(q_config)})
-            self.dequant_stubs[modality] = DeQuantStub(q_config)
+            self.quant_stubs[modality] = nn.ModuleDict({"tokens": QuantStub(qconfig)})
+            self.dequant_stubs[modality] = DeQuantStub(qconfig)
 
     def _create_modality_preprocessors(
         self,
@@ -533,7 +539,7 @@ def imagebind_huge(pretrained=False, q_config=None):
         out_embed_dim=1024,
         audio_drop_path=0.1,
         imu_drop_path=0.7,
-        q_config=q_config,
+        qconfig=q_config,
     )
 
     if pretrained:

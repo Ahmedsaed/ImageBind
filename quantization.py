@@ -9,6 +9,11 @@ from imagebind.models.quantized_imagebind_model import (
     imagebind_huge,
     ModalityType,
 )
+from imagebind.models.transformer import (
+    MultiheadAttention,
+    QuantizableMultiheadAttention,
+    QuantizedMultiheadAttention,
+)
 
 
 # ----------------------------------------
@@ -44,85 +49,19 @@ def apply_dynamic_quantization(model, dtype=torch.qint8):
 # ----------------------------------------
 # Approach 2: Static Quantization
 # ----------------------------------------
-def prepare_for_static_quantization(model):
-    """
-    Prepares the model for static quantization by adding observers.
-    """
-    from torch.quantization import QuantStub, DeQuantStub
-
-    # Set the model to evaluation mode
-    model.eval()
-
-    # Set the backend and specify which layers to quantize
-    model.qconfig = torch.quantization.get_default_qconfig("x86")
-
-    for _, mod in model.named_modules():
-        if isinstance(mod, torch.nn.Embedding):
-            mod.qconfig = torch.quantization.float_qparams_weight_only_qconfig
-        if isinstance(mod, (nn.Conv3d, nn.LayerNorm)):
-            mod.qconfig = None
-
-    # Create quantization stubs for each modality
-    model.quant_stubs = nn.ModuleDict()
-    for modality in vars(ModalityType).values():
-        model.quant_stubs[modality] = QuantStub()
-    model.dequant = DeQuantStub()
-
-    original_forward = model.forward
-
-    def wrapped_forward(inputs_dict):
-        # Quantize each modality input
-        quantized_inputs = {}
-        for modality, tensor in inputs_dict.items():
-            if modality in model.quant_stubs:
-                quantized_inputs[modality] = model.quant_stubs[modality](tensor)
-            else:
-                quantized_inputs[modality] = tensor
-
-        # Process with original forward
-        outputs = original_forward(quantized_inputs)
-
-        # Dequantize outputs
-        if isinstance(outputs, dict):
-            dequantized_outputs = {}
-            for key, tensor in outputs.items():
-                dequantized_outputs[key] = model.dequant(tensor)
-            return dequantized_outputs
-        else:
-            return model.dequant(outputs)
-
-    model.forward = wrapped_forward
-
-    # Prepare the model for static quantization
-    prepared_model = torch.quantization.prepare(model)
-
-    return prepared_model
-
-
-def calibrate_model(prepared_model, calibration_data_loader):
+def calibrate_model(prepared_model, calibration_data_loader, num_batches=10):
     """
     Runs the model on calibration data to collect statistics for quantization.
     """
     # Calibration
-    print("Calibrating model...")
     with torch.no_grad():
         for batch_idx, sample in enumerate(calibration_data_loader):
             # Forward pass for calibration
             prepared_model(sample)
 
             # Limit calibration to a few batches for speed
-            if batch_idx >= 10:
+            if batch_idx >= num_batches:
                 break
-
-
-def convert_to_static_quantized(prepared_model):
-    """
-    Converts the prepared model to a statically quantized model.
-    """
-    # Convert the model to a quantized model
-    quantized_model = torch.quantization.convert(prepared_model)
-
-    return quantized_model
 
 
 def apply_static_quantization(model, calibration_data):
@@ -130,12 +69,12 @@ def apply_static_quantization(model, calibration_data):
     Quantizes the ImageBind model using either dynamic or static quantization.
 
     Args:
-        use_static: If True, use static quantization. Otherwise, use dynamic quantization.
+        model (torch.nn.Module): The ImageBind model to be quantized.
+        calibration_data (torch.utils.data.DataLoader): DataLoader for calibration data.
 
     Returns:
         A quantized version of the model.
     """
-    print("Applying static quantization...")
     from torch.quantization.observer import HistogramObserver
     from torch.quantization import QConfig
 
@@ -144,14 +83,29 @@ def apply_static_quantization(model, calibration_data):
         weight=torch.quantization.default_per_channel_weight_observer,
     )
 
+    model.apply_qconfig(q_config)
+
+    custom_module_config = {
+        "float_to_observed_custom_module_class": {
+            MultiheadAttention: QuantizableMultiheadAttention
+        },
+        "observed_to_quantized_custom_module_class": {
+            QuantizableMultiheadAttention: QuantizedMultiheadAttention
+        },
+    }
+
     # Prepare for static quantization
-    model = prepare_for_static_quantization(model)
+    model = torch.quantization.prepare(
+        model, prepare_custom_config_dict=custom_module_config, inplace=True
+    )
 
     # Calibrate
     calibrate_model(model, calibration_data)
 
     # Convert to quantized model
-    model = convert_to_static_quantized(model)
+    model = torch.quantization.convert(
+        model, convert_custom_config_dict=custom_module_config, inplace=True
+    )
 
     return model
 
@@ -210,10 +164,10 @@ def load_static_quantized_model(model_path, device="cpu"):
     model.eval()  # Important to set to evaluation mode
 
     # Prepare the model for static quantization (same as during saving)
-    prepared_model = prepare_for_static_quantization(model)
+    prepared_model = torch.quantization.prepare(model)
 
     # Convert the model to a statically quantized model
-    quantized_model = convert_to_static_quantized(prepared_model)
+    quantized_model = torch.quantization.convert(prepared_model)
 
     # Load the state dictionary from file
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
@@ -380,11 +334,11 @@ if __name__ == "__main__":
     original_time = benchmark_model_speed(original_model, data_loader, num_runs=5)
     print(f"Original model inference time: {original_time:.2f} ms")
 
-    print("=== Dynamic Quantization Int8 ===")
-    quantized_model = apply_dynamic_quantization(original_model, dtype=torch.qint8)
+    # print("=== Dynamic Quantization Int8 ===")
+    # quantized_model = apply_dynamic_quantization(original_model, dtype=torch.qint8)
 
-    # print("=== Static Quantization ===")
-    # quantized_model = apply_static_quantization(original_model, data_loader)
+    print("=== Static Quantization ===")
+    quantized_model = apply_static_quantization(original_model, dummy_inputs)
 
     print("=== Compute Quantized Model Outputs ===")
     quantized_outputs = test_model(quantized_model, dummy_inputs)
