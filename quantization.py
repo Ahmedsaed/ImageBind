@@ -64,7 +64,7 @@ def calibrate_model(prepared_model, calibration_data_loader, num_batches=10):
                 break
 
 
-def apply_static_quantization(model, calibration_data):
+def apply_static_quantization(model, calibration_data=None):
     """
     Quantizes the ImageBind model using either dynamic or static quantization.
 
@@ -100,7 +100,8 @@ def apply_static_quantization(model, calibration_data):
     )
 
     # Calibrate
-    calibrate_model(model, calibration_data)
+    if calibration_data is not None:
+        calibrate_model(model, calibration_data)
 
     # Convert to quantized model
     model = torch.quantization.convert(
@@ -124,8 +125,6 @@ def load_dynamic_quantized_model(model_path, device="cpu"):
     Returns:
         torch.nn.Module: The loaded dynamically quantized model
     """
-    print(f"Loading dynamically quantized model from {model_path}")
-
     # First, create the base model with the same architecture
     model = imagebind_huge(pretrained=False)
     model.eval()  # Important to set to evaluation mode
@@ -157,17 +156,12 @@ def load_static_quantized_model(model_path, device="cpu"):
         )
         device = "cpu"
 
-    print(f"Loading statically quantized model from {model_path}")
-
     # Create the base model with the same architecture
     model = imagebind_huge(pretrained=False)
     model.eval()  # Important to set to evaluation mode
 
-    # Prepare the model for static quantization (same as during saving)
-    prepared_model = torch.quantization.prepare(model)
-
-    # Convert the model to a statically quantized model
-    quantized_model = torch.quantization.convert(prepared_model)
+    # Apply static quantization to the model (same as during saving)
+    quantized_model = apply_static_quantization(model)
 
     # Load the state dictionary from file
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
