@@ -96,10 +96,35 @@ class MultiheadAttention(nn.MultiheadAttention):
         return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
 
 
+class QuantizableMultiheadAttention(nn.quantizable.MultiheadAttention):
+    _FLOAT_MODULE = MultiheadAttention
+
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+
+
+class QuantizedMultiheadAttention(nn.quantized.MultiheadAttention):
+    def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
+        return super().forward(x, x, x, need_weights=False, attn_mask=attn_mask)[0]
+
+
 class ViTAttention(Attention):
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         assert attn_mask is None
         return super().forward(x)
+
+
+class QuantizedDropPath(DropPath):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.quant = torch.quantization.QuantStub()
+        self.dequant = torch.quantization.DeQuantStub()
+
+    def forward(self, x: torch.Tensor):
+        x = self.dequant(x)
+        out = super().forward(x)
+        return self.quant(out)
 
 
 class BlockWithMasking(nn.Module):
@@ -122,7 +147,7 @@ class BlockWithMasking(nn.Module):
         ), "attn_target should be a Callable. Otherwise attn_target is shared across blocks!"
         self.attn = attn_target()
         if drop_path > 0.0:
-            self.drop_path = DropPath(drop_path)
+            self.drop_path = QuantizedDropPath(drop_path)
         else:
             self.drop_path = nn.Identity()
         self.norm_1 = norm_layer(dim)
@@ -156,17 +181,31 @@ class BlockWithMasking(nn.Module):
                 requires_grad=True,
             )
 
+        self.skip_add = nn.quantized.FloatFunctional()
+
     def forward(self, x: torch.Tensor, attn_mask: torch.Tensor):
         if self.layer_scale_type is None:
-            x = x + self.drop_path(self.attn(self.norm_1(x), attn_mask))
-            x = x + self.drop_path(self.mlp(self.norm_2(x)))
-        else:
-            x = (
-                x
-                + self.drop_path(self.attn(self.norm_1(x), attn_mask))
-                * self.layer_scale_gamma1
+            # x = x + self.drop_path(self.attn(self.norm_1(x), attn_mask))
+            x = self.skip_add.add(
+                x, self.drop_path(self.attn(self.norm_1(x), attn_mask))
             )
-            x = x + self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            # x = x + self.drop_path(self.mlp(self.norm_2(x)))
+            x = self.skip_add.add(x, self.drop_path(self.mlp(self.norm_2(x))))
+        else:
+            # x = (
+            #     x
+            #     + self.drop_path(self.attn(self.norm_1(x), attn_mask))
+            #     * self.layer_scale_gamma1
+            # )
+            # x = x + self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            x = self.skip_add.add(
+                x,
+                self.drop_path(self.attn(self.norm_1(x), attn_mask))
+                * self.layer_scale_gamma1,
+            )
+            x = self.skip_add.add(
+                x, self.drop_path(self.mlp(self.norm_2(x))) * self.layer_scale_gamma2
+            )
         return x
 
 
@@ -187,7 +226,9 @@ class SimpleTransformer(nn.Module):
         norm_layer: Callable = _LAYER_NORM,
         mlp_ratio: int = 4,
         ffn_dropout_rate: float = 0.0,
-        layer_scale_type: Optional[str] = None,  # from cait; possible values are None, "per_channel", "scalar"
+        layer_scale_type: Optional[
+            str
+        ] = None,  # from cait; possible values are None, "per_channel", "scalar"
         layer_scale_init_value: float = 1e-4,  # from cait; float
         weight_init_style: str = "jax",  # possible values jax or pytorch
     ):
