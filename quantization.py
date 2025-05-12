@@ -1,0 +1,358 @@
+#!/usr/bin/env python3
+import torch
+import torch.nn as nn
+import torch.quantization
+from collections import defaultdict
+
+# Import your ImageBind model
+from imagebind.models.quantized_imagebind_model import (
+    imagebind_huge,
+    ModalityType,
+)
+from imagebind.models.transformer import (
+    MultiheadAttention,
+    QuantizableMultiheadAttention,
+    QuantizedMultiheadAttention,
+)
+
+
+# ----------------------------------------
+# Approach 1: Dynamic Quantization
+# ----------------------------------------
+def apply_dynamic_quantization(model, dtype=torch.qint8):
+    """
+    Dynamic quantization - quantizes the weights of linear and conv layers
+    to int8 and performs calculations using int8.
+    Dynamically quantizes activations during inference.
+    """
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Embedding):
+            module.qconfig = torch.quantization.float_qparams_weight_only_qconfig
+
+    # Configure quantization
+    quantized_model = torch.quantization.quantize_dynamic(
+        model,
+        {
+            nn.Linear,
+            nn.LayerNorm,
+            nn.Embedding,
+            nn.Dropout,
+            nn.GELU,
+        },  # a set of layers to dynamically quantize
+        dtype=dtype,  # the target dtype for quantized weights
+        inplace=True,
+    )
+
+    return quantized_model
+
+
+# ----------------------------------------
+# Approach 2: Static Quantization
+# ----------------------------------------
+def calibrate_model(prepared_model, calibration_data_loader, num_batches=10):
+    """
+    Runs the model on calibration data to collect statistics for quantization.
+    """
+    # Calibration
+    with torch.no_grad():
+        for batch_idx, sample in enumerate(calibration_data_loader):
+            # Forward pass for calibration
+            prepared_model(sample)
+
+            # Limit calibration to a few batches for speed
+            if batch_idx >= num_batches:
+                break
+
+
+def apply_static_quantization(model, calibration_data=None):
+    """
+    Quantizes the ImageBind model using either dynamic or static quantization.
+
+    Args:
+        model (torch.nn.Module): The ImageBind model to be quantized.
+        calibration_data (torch.utils.data.DataLoader): DataLoader for calibration data.
+
+    Returns:
+        A quantized version of the model.
+    """
+    from torch.quantization.observer import HistogramObserver
+    from torch.quantization import QConfig
+
+    q_config = QConfig(
+        activation=HistogramObserver.with_args(quant_max=255, quant_min=0),
+        weight=torch.quantization.default_per_channel_weight_observer,
+    )
+
+    model.apply_qconfig(q_config)
+
+    custom_module_config = {
+        "float_to_observed_custom_module_class": {
+            MultiheadAttention: QuantizableMultiheadAttention
+        },
+        "observed_to_quantized_custom_module_class": {
+            QuantizableMultiheadAttention: QuantizedMultiheadAttention
+        },
+    }
+
+    # Prepare for static quantization
+    model = torch.quantization.prepare(
+        model, prepare_custom_config_dict=custom_module_config, inplace=True
+    )
+
+    # Calibrate
+    if calibration_data is not None:
+        calibrate_model(model, calibration_data)
+
+    # Convert to quantized model
+    model = torch.quantization.convert(
+        model, convert_custom_config_dict=custom_module_config, inplace=True
+    )
+
+    return model
+
+
+# ----------------------------------------
+# Model Loaders
+# ----------------------------------------
+def load_dynamic_quantized_model(model_path, device="cpu"):
+    """
+    Load a dynamically quantized ImageBind model from a saved state dict.
+
+    Args:
+        model_path (str): Path to the saved dynamically quantized model weights
+        device (str): Device to load the model on ('cpu', 'cuda')
+
+    Returns:
+        torch.nn.Module: The loaded dynamically quantized model
+    """
+    # First, create the base model with the same architecture
+    model = imagebind_huge(pretrained=False)
+    model.eval()  # Important to set to evaluation mode
+
+    # Apply dynamic quantization to the model (same as during saving)
+    quantized_model = apply_dynamic_quantization(model)
+
+    # Load the state dictionary from file
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    quantized_model.load_state_dict(state_dict)
+
+    return quantized_model.to(device)
+
+
+def load_static_quantized_model(model_path, device="cpu"):
+    """
+    Load a statically quantized ImageBind model from a saved state dict.
+
+    Args:
+        model_path (str): Path to the saved statically quantized model weights
+        device (str): Device to load the model on (should be 'cpu' for static quantization)
+
+    Returns:
+        torch.nn.Module: The loaded statically quantized model
+    """
+    if device != "cpu":
+        print(
+            "Warning: Static quantization was done for CPU inference. Forcing device to 'cpu'."
+        )
+        device = "cpu"
+
+    # Create the base model with the same architecture
+    model = imagebind_huge(pretrained=False)
+    model.eval()  # Important to set to evaluation mode
+
+    # Apply static quantization to the model (same as during saving)
+    quantized_model = apply_static_quantization(model)
+
+    # Load the state dictionary from file
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    quantized_model.load_state_dict(state_dict)
+
+    return quantized_model.to(device)
+
+
+# ----------------------------------------
+# Helper Functions
+# ----------------------------------------
+def get_model_size(model):
+    """
+    Returns the size of the model in megabytes.
+    """
+    import os
+
+    torch.save(model.state_dict(), "temp_model.pt")
+    size_mb = os.path.getsize("temp_model.pt") / (1024 * 1024)
+    os.remove("temp_model.pt")
+    return size_mb
+
+
+def create_dummy_data(batch_size=10):
+    """
+    Creates a dummy dataset for calibration.
+
+    Returns:
+        A DataLoader with dummy data.
+    """
+    from torch.utils.data import Dataset, DataLoader
+
+    class DummyDataset(Dataset):
+        def __init__(self, num_samples=100):
+            self.num_samples = num_samples
+
+        def __len__(self):
+            return self.num_samples
+
+        def __getitem__(self, idx):
+            # Create dummy inputs for each modality
+            dummy_data = {
+                ModalityType.VISION: torch.randn(3, 224, 224),
+                ModalityType.TEXT: torch.randint(0, 49408, (77,)),
+                ModalityType.AUDIO: torch.randn(3, 1, 128, 204),
+                ModalityType.DEPTH: torch.randn(1, 224, 224),
+                ModalityType.THERMAL: torch.randn(1, 224, 224),
+                ModalityType.IMU: torch.randn(6, 2000),
+            }
+            return dummy_data
+
+    dataset = DummyDataset()
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    return dataloader
+
+
+# ----------------------------------------
+# Benchmarking Functions
+# ----------------------------------------
+def benchmark_model_speed(model, data_loader, num_runs=50):
+    """
+    Benchmark model inference speed.
+
+    Args:
+        model: The model to benchmark
+        data_loader: DataLoader with dummy data
+        num_runs: Number of runs for benchmarking
+        num_samples: Number of samples to process during benchmarking
+
+    Returns:
+        Average inference time in milliseconds
+    """
+    import time
+
+    with torch.no_grad():
+        # Warm-up
+        for _ in range(1):
+            model(next(iter(data_loader)))
+
+        # Benchmark
+        start_time = time.time()
+        for _ in range(num_runs):
+            with torch.no_grad():
+                model(next(iter(data_loader)))
+
+        end_time = time.time()
+
+    avg_time_ms = (end_time - start_time) * 1000 / num_runs
+    return avg_time_ms
+
+
+def compare_outputs(original_outputs, quantized_outputs):
+    """
+    Compare the outputs of the original and quantized models.
+
+    Args:
+        original_outputs: Outputs from the original model
+        quantized_outputs: Outputs from the quantized model
+
+    Returns:
+        A dictionary with average similarity scores for each modality
+    """
+    modality_scores = {}
+
+    for i in range(len(original_outputs)):
+        original_output = original_outputs[i]
+        quantized_output = quantized_outputs[i]
+
+        for modality in original_output:
+            if modality in quantized_output:
+                original_out = original_output[modality]
+                quantized_out = quantized_output[modality]
+
+                similarity = torch.nn.functional.cosine_similarity(
+                    original_out.view(1, -1), quantized_out.view(1, -1)
+                ).item()
+
+                modality_scores.setdefault(modality, []).append(similarity)
+
+    for modality, scores in modality_scores.items():
+        avg_similarity = sum(scores) / len(scores)
+        print(f"Average output similarity for {modality}: {avg_similarity:.6f}")
+
+    return modality_scores
+
+
+# ----------------------------------------
+# Experiments
+# ----------------------------------------
+def test_model(model, data_loader, num_samples=10):
+    """
+    Test the model with dummy data
+    """
+    outputs = []
+
+    with torch.no_grad():
+        for btch_idx, sample in enumerate(data_loader):
+            if btch_idx >= num_samples:
+                break
+            output = model(sample)
+            outputs.append(output)
+
+    return outputs
+
+
+if __name__ == "__main__":
+    import warnings
+
+    warnings.filterwarnings("ignore", category=UserWarning)
+
+    # Load the original model for comparison
+    original_model = imagebind_huge(pretrained=True)
+    original_model.eval()
+
+    data_loader = create_dummy_data()
+
+    dummy_inputs = [next(iter(data_loader)) for _ in range(10)]
+
+    print("=== Computing Original Model Outputs ===")
+    original_outputs = test_model(original_model, dummy_inputs)
+    original_model_size = get_model_size(original_model)
+
+    print("=== Benchmarking Original Model Speed ===")
+    original_time = benchmark_model_speed(original_model, data_loader, num_runs=5)
+    print(f"Original model inference time: {original_time:.2f} ms")
+
+    # print("=== Dynamic Quantization Int8 ===")
+    # quantized_model = apply_dynamic_quantization(original_model, dtype=torch.qint8)
+
+    print("=== Static Quantization ===")
+    quantized_model = apply_static_quantization(original_model, dummy_inputs)
+
+    print("=== Compute Quantized Model Outputs ===")
+    quantized_outputs = test_model(quantized_model, dummy_inputs)
+    quantized_model_size = get_model_size(quantized_model)
+
+    print("=== Benchmarking Quantized Model Speed ===")
+    quantized_time = benchmark_model_speed(quantized_model, data_loader, num_runs=5)
+    print(f"Quantized model inference time: {quantized_time:.2f} ms")
+
+    print("=== Comparing Outputs ===")
+    print(f"Original model size: {original_model_size:.2f} MB")
+    print(f"Quantized model size: {quantized_model_size:.2f} MB")
+    print(
+        f"Size reduction: {100 * (1 - (quantized_model_size / original_model_size)):.2f}%"
+    )
+    print(f"Speed improvement: {100 * (1 - (quantized_time / original_time)):.2f}%")
+    compare_outputs(original_outputs, quantized_outputs)
+
+    # print("=== Saving Quantized Model === ")
+    # torch.save(
+    #     quantized_model.state_dict(),
+    #     ".checkpoints/imagebind_quantized.pth",
+    # )

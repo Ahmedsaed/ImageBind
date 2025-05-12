@@ -18,6 +18,9 @@ class Normalize(nn.Module):
         self.dim = dim
 
     def forward(self, x):
+        if x.is_quantized:
+            x = x.dequantize()
+
         return torch.nn.functional.normalize(x, dim=self.dim, p=2)
 
 
@@ -42,8 +45,10 @@ class LearnableLogitScaling(nn.Module):
         return torch.clip(self.log_logit_scale.exp(), max=self.max_logit_scale) * x
 
     def extra_repr(self):
-        st = f"logit_scale_init={self.logit_scale_init},learnable={self.learnable}," \
-             f" max_logit_scale={self.max_logit_scale}"
+        st = (
+            f"logit_scale_init={self.logit_scale_init},learnable={self.learnable},"
+            f" max_logit_scale={self.max_logit_scale}"
+        )
         return st
 
 
